@@ -25,200 +25,476 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 SOURCE_DEFAULT_URL = "https://gasprices.aaa.com/state-gas-price-averages/"
 SOURCE_URL = os.environ.get("SOURCE_URL") or SOURCE_DEFAULT_URL
-DATE_CSS_SELECTOR = "div.average-price > span"
 
+DATE_CSS_SELECTOR = "div.average-price > span"
 STATES_CSS_SELECTOR = "#sortable > tbody > tr"
 
 METROS_ACCORDION_EXPAND_CSS_SELECTOR = "a.expand-all-js"
 METROS_NAME_CSS_SELECTOR = "div.accordion-prices > h3.ui-accordion-header"
-METROS_TABLE_CSS_SELECTOR = "div.accordion-prices > div.ui-accordion-content > div.tblwrap > table.table-mob"
+METROS_TABLE_CSS_SELECTOR = (
+    "div.accordion-prices > div.ui-accordion-content "
+    "> div.tblwrap > table.table-mob"
+)
 
 DATASETS_DEFAULT_BASE_PATH = Path("./data")
-DATASETS_BASE_PATH = Path(os.environ.get("DATASETS_BASE_PATH") or DATASETS_DEFAULT_BASE_PATH)
+DATASETS_BASE_PATH = Path(
+    os.environ.get("DATASETS_BASE_PATH") or DATASETS_DEFAULT_BASE_PATH
+)
 
-HEADERS_BASIC = ["State-Name", "State-Abbreviation", "Metro-Name"]
 HEADERS_CURRENCY = "Currency"
 HEADERS_UNIT = "Unit"
 HEADERS_DATE = "Date"
+
 CURRENCY = "U.S Dollar"
 UNIT = "US Gallon"
 
 DRIVER_WAIT_TIME_MAXIMUM = 10
-
 EXPAND_ACCORDION_WAIT_TIME = 2
-
 NEXT_PAGE_WAIT_TIME = 2
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 
 
 def wait_until_document_ready(driver=None, wait_time=10, *css_selectors):
-    """Wait for document and elements to be available."""
+    """Wait for document and requested elements to be available."""
+
     logging.info("Waiting for document to be ready to use JavaScript ...")
+
     while driver.execute_script("return document.readyState") != "complete":
         logging.info("Waiting for document ready state ...")
+        time.sleep(0.1)
 
     logging.info("Waiting for document common elements to be present ...")
+
     driver_wait = WebDriverWait(driver, wait_time)
-    css_selectors = set(["body", *css_selectors])
-    expected_conditions = (
-        EC.presence_of_all_elements_located((By.CSS_SELECTOR, css_selector)) for css_selector in css_selectors
+
+    css_selectors = {"body", *css_selectors}
+
+    expected_conditions = [
+        EC.presence_of_all_elements_located(
+            (By.CSS_SELECTOR, css_selector)
+        )
+        for css_selector in css_selectors
+    ]
+
+    elements = driver_wait.until(
+        EC.all_of(*expected_conditions)
     )
-    elements = driver_wait.until(EC.all_of(*expected_conditions))
+
     return elements
 
 
-# prepare chrome
+def parse_price_cells(cells):
+    """Convert AAA price cells such as '$3.456' to floats."""
+
+    values = []
+
+    for cell in cells:
+        value = cell.text.replace("$", "").strip()
+
+        if not value or value in {"-", "N/A"}:
+            values.append(None)
+            continue
+
+        try:
+            values.append(float(value))
+        except ValueError:
+            values.append(None)
+
+    return values
+
+
+# -------------------------------------------------------------------
+# Prepare Chrome
+# -------------------------------------------------------------------
+
 logging.info("Start.")
 logging.info("Preparing chrome ...")
+
 chrome_options = webdriver.ChromeOptions()
+
 chrome_options.add_argument("--headless")
 chrome_options.add_argument("--incognito")
 chrome_options.add_argument("--no-default-browser-check")
 chrome_options.add_argument("--disable-first-run-ui")
 chrome_options.add_argument("--no-first-run")
-chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-chrome_options.add_experimental_option("useAutomationExtension", False)
+chrome_options.add_argument(
+    "--disable-blink-features=AutomationControlled"
+)
+chrome_options.add_experimental_option(
+    "excludeSwitches",
+    ["enable-automation"],
+)
+chrome_options.add_experimental_option(
+    "useAutomationExtension",
+    False,
+)
 chrome_options.add_argument("--disable-sync")
 
 window_width = random.randint(900, 1920)
 window_height = random.randint(768, 1080)
-logging.info(f"Set window-size to {window_width},{window_height}")
-chrome_options.add_argument(f"--window-size={window_width},{window_height}")
+
+logging.info(
+    f"Set window-size to {window_width},{window_height}"
+)
+
+chrome_options.add_argument(
+    f"--window-size={window_width},{window_height}"
+)
 
 chrome_driver_manager = ChromeDriverManager()
 chrome_executable_path = chrome_driver_manager.install()
-chrome_service = webdriver.ChromeService(executable_path=chrome_executable_path)
 
-chrome_driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
-chrome_driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+chrome_service = webdriver.ChromeService(
+    executable_path=chrome_executable_path
+)
+
+chrome_driver = webdriver.Chrome(
+    service=chrome_service,
+    options=chrome_options,
+)
+
+chrome_driver.execute_script(
+    "Object.defineProperty("
+    "navigator, 'webdriver', "
+    "{get: () => undefined}"
+    ")"
+)
+
 logging.info("Preparing chrome finished.")
 
-# request page
-logging.info("Requesting page ...")
-chrome_driver.get(SOURCE_URL)
-css_selectors = [DATE_CSS_SELECTOR, STATES_CSS_SELECTOR]
-wait_until_document_ready(chrome_driver, DRIVER_WAIT_TIME_MAXIMUM, *css_selectors)
-logging.info("Requesting page finished.")
 
-logging.info("Parsing data ...")
-# parse gas price date
 try:
-    scrape_date = chrome_driver.find_element(By.CSS_SELECTOR, DATE_CSS_SELECTOR)
-    scrape_date = scrape_date.text.strip().split()[-1].strip()
-    scrape_date = datetime.datetime.strptime(scrape_date, "%m/%d/%y").date()
-except:
-    scrape_date = datetime.date.today()
+    # -------------------------------------------------------------------
+    # Request national/state page
+    # -------------------------------------------------------------------
 
-# parse each state data (i.e state_name, state_abbreviation, state_url)
-logging.info("Parsing states data ...")
-states = chrome_driver.find_elements(By.CSS_SELECTOR, STATES_CSS_SELECTOR)
+    logging.info("Requesting page ...")
 
+    chrome_driver.get(SOURCE_URL)
 
-def parse_state_row(row):
-    """Parse state name, abbreviation and url."""
-    tds = row.find_elements(By.TAG_NAME, "td")
-    state_td = tds[0].find_element(By.TAG_NAME, "a")
-    state_name = state_td.text.strip()
-    state_url = state_td.get_attribute("href").strip()
-    state_abbreviation = state_url.split("=")[-1].strip().upper()
-    return (state_name, state_abbreviation, state_url)
+    css_selectors = [
+        DATE_CSS_SELECTOR,
+        STATES_CSS_SELECTOR,
+    ]
 
+    wait_until_document_ready(
+        chrome_driver,
+        DRIVER_WAIT_TIME_MAXIMUM,
+        *css_selectors,
+    )
 
-states = list(map(parse_state_row, states))
-logging.info("Parsing state data finished.")
+    logging.info("Requesting page finished.")
+    logging.info("Parsing data ...")
 
-# parse each state metros data (i.e metro_name, and prices)
-logging.info("Parsing metro data ...")
-data = []
-for state_name, state_abbreviation, state_url in states:
-    logging.info(f"Parsing {state_name} metro data ...")
+    # -------------------------------------------------------------------
+    # Parse AAA price date
+    # -------------------------------------------------------------------
 
-    # request state metros page
-    chrome_driver.get(state_url)
-    css_selectors = [METROS_ACCORDION_EXPAND_CSS_SELECTOR, METROS_NAME_CSS_SELECTOR, METROS_TABLE_CSS_SELECTOR]
-    wait_until_document_ready(chrome_driver, DRIVER_WAIT_TIME_MAXIMUM, *css_selectors)
+    try:
+        scrape_date_element = chrome_driver.find_element(
+            By.CSS_SELECTOR,
+            DATE_CSS_SELECTOR,
+        )
 
-    # expand all metro accordions
-    expand_accordion = chrome_driver.find_element(By.CSS_SELECTOR, METROS_ACCORDION_EXPAND_CSS_SELECTOR)
-    expand_accordion.click()
-    time.sleep(EXPAND_ACCORDION_WAIT_TIME)
+        scrape_date_text = (
+            scrape_date_element.text
+            .strip()
+            .split()[-1]
+            .strip()
+        )
 
-    # state metro names
-    metro_names = chrome_driver.find_elements(By.CSS_SELECTOR, METROS_NAME_CSS_SELECTOR)
-    metro_names = [metro_name.text.strip() for metro_name in metro_names]
+        scrape_date = datetime.datetime.strptime(
+            scrape_date_text,
+            "%m/%d/%y",
+        ).date()
 
-    # state metro tables
-    metro_tables = chrome_driver.find_elements(By.CSS_SELECTOR, METROS_TABLE_CSS_SELECTOR)
+    except Exception:
+        scrape_date = datetime.date.today()
 
-    # state metros data
-    for metro_name, metro_table in zip(metro_names, metro_tables):
-        # parse data headers
-        headers = metro_table.find_elements(By.CSS_SELECTOR, "thead > tr > th")[1:]
-        headers = [header.text.strip() for header in headers]
+    # -------------------------------------------------------------------
+    # Parse state list
+    # -------------------------------------------------------------------
 
-# parse current and yesterday rows
-current_cells = metro_table.find_elements(
-    By.CSS_SELECTOR, "tbody > tr:nth-child(1) > td"
-)[1:]
+    logging.info("Parsing states data ...")
 
-yesterday_cells = metro_table.find_elements(
-    By.CSS_SELECTOR, "tbody > tr:nth-child(2) > td"
-)[1:]
+    state_rows = chrome_driver.find_elements(
+        By.CSS_SELECTOR,
+        STATES_CSS_SELECTOR,
+    )
 
-current_values = [
-    float(cell.text.replace("$", "").strip())
-    for cell in current_cells
-]
+    def parse_state_row(row):
+        """Parse state name, abbreviation and URL."""
 
-yesterday_values = [
-    float(cell.text.replace("$", "").strip())
-    for cell in yesterday_cells
-]
+        tds = row.find_elements(By.TAG_NAME, "td")
 
-# collect metro data
-metro = {
-    "State-Name": state_name,
-    "State-Abbreviation": state_abbreviation,
-    "Metro-Name": metro_name,
-}
+        state_td = tds[0].find_element(
+            By.TAG_NAME,
+            "a",
+        )
 
-for fuel, current, yesterday in zip(
-    headers, current_values, yesterday_values
-):
-    fuel_name = "Mid-Grade" if fuel == "Mid" else fuel
+        state_name = state_td.text.strip()
 
-    metro[f"{fuel_name}-Current"] = current
-    metro[f"{fuel_name}-Yesterday"] = yesterday
-    metro[f"{fuel_name}-Change"] = current - yesterday
+        state_url = (
+            state_td
+            .get_attribute("href")
+            .strip()
+        )
 
-data.append(metro)
+        state_abbreviation = (
+            state_url
+            .split("=")[-1]
+            .strip()
+            .upper()
+        )
 
-logging.info(f"Parsing {state_name} metro finished.")
+        return (
+            state_name,
+            state_abbreviation,
+            state_url,
+        )
 
-    # wait a bit before scrape next state page
-    time.sleep(NEXT_PAGE_WAIT_TIME)
+    states = [
+        parse_state_row(row)
+        for row in state_rows
+    ]
 
-logging.info("Parsing metro data finished.")
+    logging.info(
+        f"Parsing state data finished. "
+        f"Found {len(states)} state/district pages."
+    )
 
-# collect data
-df = pd.DataFrame(data)
-df[HEADERS_CURRENCY] = CURRENCY
-df[HEADERS_UNIT] = UNIT
-df[HEADERS_DATE] = scrape_date
-df = df.rename(columns={"Mid": "Mid-Grade"})
-logging.info("Parsing data finished.")
+    # -------------------------------------------------------------------
+    # Parse metro data
+    # -------------------------------------------------------------------
 
-# save data
-data_pth = DATASETS_BASE_PATH / "metro-daily-averages" / f"{scrape_date}.csv"
-logging.info(f"Saving data at {data_pth}")
-data_pth = data_pth.expanduser().resolve()
-data_pth.parent.mkdir(parents=True, exist_ok=True)
-df.to_csv(data_pth, index=False)
-logging.info("Saving data finished.")
+    logging.info("Parsing metro data ...")
 
-# close chrome
-chrome_driver.close()
-chrome_driver.quit()
+    data = []
+
+    for state_name, state_abbreviation, state_url in states:
+
+        logging.info(
+            f"Parsing {state_name} metro data ..."
+        )
+
+        # Request state metro page
+        chrome_driver.get(state_url)
+
+        css_selectors = [
+            METROS_ACCORDION_EXPAND_CSS_SELECTOR,
+            METROS_NAME_CSS_SELECTOR,
+            METROS_TABLE_CSS_SELECTOR,
+        ]
+
+        wait_until_document_ready(
+            chrome_driver,
+            DRIVER_WAIT_TIME_MAXIMUM,
+            *css_selectors,
+        )
+
+        # Expand all metro accordions
+        expand_accordion = chrome_driver.find_element(
+            By.CSS_SELECTOR,
+            METROS_ACCORDION_EXPAND_CSS_SELECTOR,
+        )
+
+        expand_accordion.click()
+
+        time.sleep(EXPAND_ACCORDION_WAIT_TIME)
+
+        # Metro names
+        metro_name_elements = chrome_driver.find_elements(
+            By.CSS_SELECTOR,
+            METROS_NAME_CSS_SELECTOR,
+        )
+
+        metro_names = [
+            metro_name.text.strip()
+            for metro_name in metro_name_elements
+        ]
+
+        # Metro tables
+        metro_tables = chrome_driver.find_elements(
+            By.CSS_SELECTOR,
+            METROS_TABLE_CSS_SELECTOR,
+        )
+
+        # ---------------------------------------------------------------
+        # Individual metro tables
+        # ---------------------------------------------------------------
+
+        for metro_name, metro_table in zip(
+            metro_names,
+            metro_tables,
+        ):
+
+            # Parse fuel headers
+            header_elements = metro_table.find_elements(
+                By.CSS_SELECTOR,
+                "thead > tr > th",
+            )[1:]
+
+            fuel_headers = [
+                header.text.strip()
+                for header in header_elements
+            ]
+
+            # Normalize "Mid" to "Mid-Grade"
+            fuel_headers = [
+                "Mid-Grade" if fuel == "Mid" else fuel
+                for fuel in fuel_headers
+            ]
+
+            # Read all body rows
+            body_rows = metro_table.find_elements(
+                By.CSS_SELECTOR,
+                "tbody > tr",
+            )
+
+            if len(body_rows) < 2:
+                logging.warning(
+                    f"{state_name} / {metro_name}: "
+                    f"fewer than two price rows; skipping."
+                )
+                continue
+
+            # First row = current average
+            current_cells = body_rows[0].find_elements(
+                By.TAG_NAME,
+                "td",
+            )[1:]
+
+            # Second row = yesterday average
+            yesterday_cells = body_rows[1].find_elements(
+                By.TAG_NAME,
+                "td",
+            )[1:]
+
+            current_values = parse_price_cells(
+                current_cells
+            )
+
+            yesterday_values = parse_price_cells(
+                yesterday_cells
+            )
+
+            if (
+                len(current_values) != len(fuel_headers)
+                or
+                len(yesterday_values) != len(fuel_headers)
+            ):
+                logging.warning(
+                    f"{state_name} / {metro_name}: "
+                    f"price/header length mismatch; skipping."
+                )
+                continue
+
+            # Build metro output row
+            metro = {
+                "State-Name": state_name,
+                "State-Abbreviation": state_abbreviation,
+                "Metro-Name": metro_name,
+            }
+
+            for (
+                fuel,
+                current,
+                yesterday,
+            ) in zip(
+                fuel_headers,
+                current_values,
+                yesterday_values,
+            ):
+
+                metro[
+                    f"{fuel}-Current"
+                ] = current
+
+                metro[
+                    f"{fuel}-Yesterday"
+                ] = yesterday
+
+                if (
+                    current is not None
+                    and yesterday is not None
+                ):
+                    metro[
+                        f"{fuel}-Change"
+                    ] = current - yesterday
+                else:
+                    metro[
+                        f"{fuel}-Change"
+                    ] = None
+
+            data.append(metro)
+
+        logging.info(
+            f"Parsing {state_name} metro finished."
+        )
+
+        # Wait before next state
+        time.sleep(NEXT_PAGE_WAIT_TIME)
+
+    logging.info(
+        f"Parsing metro data finished. "
+        f"Captured {len(data)} metro rows."
+    )
+
+    # -------------------------------------------------------------------
+    # Create dataframe
+    # -------------------------------------------------------------------
+
+    df = pd.DataFrame(data)
+
+    df[HEADERS_CURRENCY] = CURRENCY
+    df[HEADERS_UNIT] = UNIT
+    df[HEADERS_DATE] = scrape_date
+
+    logging.info("Parsing data finished.")
+
+    # -------------------------------------------------------------------
+    # Save CSV
+    # -------------------------------------------------------------------
+
+    data_pth = (
+        DATASETS_BASE_PATH
+        / "metro-daily-averages"
+        / f"{scrape_date}.csv"
+    )
+
+    logging.info(
+        f"Saving data at {data_pth}"
+    )
+
+    data_pth = (
+        data_pth
+        .expanduser()
+        .resolve()
+    )
+
+    data_pth.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    df.to_csv(
+        data_pth,
+        index=False,
+    )
+
+    logging.info(
+        f"Saving data finished: {data_pth}"
+    )
+
+finally:
+    # -------------------------------------------------------------------
+    # Close Chrome
+    # -------------------------------------------------------------------
+
+    chrome_driver.quit()
+
 logging.info("Done.")
