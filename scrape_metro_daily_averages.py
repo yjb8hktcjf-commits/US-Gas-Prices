@@ -158,15 +158,42 @@ for state_name, state_abbreviation, state_url in states:
         headers = metro_table.find_elements(By.CSS_SELECTOR, "thead > tr > th")[1:]
         headers = [header.text.strip() for header in headers]
 
-        # parse data rows
-        rows = metro_table.find_elements(By.CSS_SELECTOR, "tbody > tr:nth-child(1) > td")[1:]
-        rows = [float(row.text.replace("$", "").strip()) for row in rows]
+# parse current and yesterday rows
+current_cells = metro_table.find_elements(
+    By.CSS_SELECTOR, "tbody > tr:nth-child(1) > td"
+)[1:]
 
-        # collect metro data
-        headers = HEADERS_BASIC + headers
-        rows = [state_name, state_abbreviation, metro_name] + rows
-        metro = dict(zip(headers, rows))
-        data.append(metro)
+yesterday_cells = metro_table.find_elements(
+    By.CSS_SELECTOR, "tbody > tr:nth-child(2) > td"
+)[1:]
+
+current_values = [
+    float(cell.text.replace("$", "").strip())
+    for cell in current_cells
+]
+
+yesterday_values = [
+    float(cell.text.replace("$", "").strip())
+    for cell in yesterday_cells
+]
+
+# collect metro data
+metro = {
+    "State-Name": state_name,
+    "State-Abbreviation": state_abbreviation,
+    "Metro-Name": metro_name,
+}
+
+for fuel, current, yesterday in zip(
+    headers, current_values, yesterday_values
+):
+    fuel_name = "Mid-Grade" if fuel == "Mid" else fuel
+
+    metro[f"{fuel_name}-Current"] = current
+    metro[f"{fuel_name}-Yesterday"] = yesterday
+    metro[f"{fuel_name}-Change"] = current - yesterday
+
+data.append(metro)
 
     logging.info(f"Parsing {state_name} metro finished.")
 
