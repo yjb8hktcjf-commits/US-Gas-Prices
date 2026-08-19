@@ -195,7 +195,7 @@ for fuel, current, yesterday in zip(
 
 data.append(metro)
 
-    logging.info(f"Parsing {state_name} metro finished.")
+logging.info(f"Parsing {state_name} metro finished.")
 
     # wait a bit before scrape next state page
     time.sleep(NEXT_PAGE_WAIT_TIME)
