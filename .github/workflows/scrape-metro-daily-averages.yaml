@@ -3,7 +3,7 @@ name: scrape-metro-daily-averages
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 14 * * *"
+    - cron: "54 20 * * *"
 
 permissions:
   contents: write
